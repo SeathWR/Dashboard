@@ -1,0 +1,4 @@
+﻿modelo,rmse,mae,r2
+Random Forest Optimizado,6.705,4.8114,0.5772
+XGBoost,6.6824,4.7461,0.5801
+NowCast IBOCA,3.9885,2.8479,0.8505
