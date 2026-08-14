@@ -1,0 +1,15 @@
+﻿variable,importancia
+pm25_lag1,0.3227
+pm25_roll3,0.199
+pm25_roll6,0.1246
+pm25_lag2,0.0933
+pm25_lag3,0.0666
+pm25_lag6,0.0416
+pm25_lag24,0.0378
+wind_speed_10m,0.0196
+hora,0.0195
+temperature_2m,0.0188
+relative_humidity_2m,0.0153
+surface_pressure,0.0149
+mes,0.0145
+direct_radiation,0.0119

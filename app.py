@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import numpy as np
+
 
 # ── Configuración general ────────────────────────────────────────────────────
 st.set_page_config(
@@ -178,7 +180,7 @@ with col_g1:
 # ── Gráfico 2: Desfase promedio por hora del día ─────────────────────────────
 with col_g2:
     desfase_por_hora = (
-        df.drop(subset=["diferencia"])
+        df.dropna(subset=["diferencia"])
         .groupby("hora")["diferencia"]
         .agg(["mean", "std"])
         .reset_index()
@@ -249,5 +251,310 @@ resumen["Desviacion_Std"] = resumen["Desviacion_Std"].round(2)
 resumen["MAE"] = resumen["MAE"].round(2)
 
 st.dataframe(resumen, use_container_width=True, hide_index=True)
+
+st.divider()
+
+# ── Sección 4: Comparación de métricas de modelos ───────────────────────────
+st.subheader("🤖 Comparación de Modelos — Random Forest vs. XGBoost vs. NowCast")
+st.markdown(
+    "Métricas de desempeño calculadas sobre el periodo de estudio completo "
+    "(Enero 2024 – Diciembre 2025). "
+    "**Nota:** la comparación con NowCast es estructuralmente asimétrica — "
+    "NowCast utiliza lecturas de estación en tiempo real, mientras que los modelos "
+    "ML predicen sin acceso a ese dato inmediato."
+)
+
+# ── Datos de métricas ────────────────────────────────────────────────────────
+metricas = pd.DataFrame({
+    "Modelo": ["Random Forest Optimizado", "XGBoost", "NowCast IBOCA"],
+    "RMSE": [6.7050, 6.6824, 3.9885],
+    "MAE": [4.8114, 4.7461, 2.8479],
+    "R²": [0.5772, 0.5801, 0.8505]
+})
+
+colores_modelos = {
+    "Random Forest Optimizado": "#1f77b4",
+    "XGBoost": "#2ca02c",
+    "NowCast IBOCA": "#ff7f0e"
+}
+
+col_m1, col_m2 = st.columns([1, 2])
+
+# ── Tabla de métricas ────────────────────────────────────────────────────────
+with col_m1:
+    st.markdown("**Tabla resumen**")
+
+    # Agregar columna de color como emoji para identificar cada modelo
+    metricas_display = metricas.copy()
+    metricas_display.insert(0, "Color", ["🔵", "🟢", "🟠"])
+
+    st.dataframe(
+        metricas_display,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Color": st.column_config.TextColumn("", width="small"),
+            "Modelo": st.column_config.TextColumn("Modelo"),
+            "RMSE": st.column_config.NumberColumn("RMSE", format="%.4f"),
+            "MAE": st.column_config.NumberColumn("MAE", format="%.4f"),
+            "R²": st.column_config.NumberColumn("R²", format="%.4f")
+        }
+    )
+
+    st.caption(
+        "RMSE y MAE en µg/m³ — valores más bajos indican mejor desempeño. "
+        "R² más cercano a 1 indica mejor ajuste."
+    )
+
+# ── Gráfico de barras agrupadas ──────────────────────────────────────────────
+with col_m2:
+    metricas_melted = metricas.melt(
+        id_vars="Modelo",
+        value_vars=["RMSE", "MAE", "R²"],
+        var_name="Métrica",
+        value_name="Valor"
+    )
+
+    fig_metricas = px.bar(
+        metricas_melted,
+        x="Métrica",
+        y="Valor",
+        color="Modelo",
+        barmode="group",
+        color_discrete_map=colores_modelos,
+        title="Comparación visual de métricas por modelo",
+        text_auto=".4f"
+    )
+
+    fig_metricas.update_traces(textposition="outside", textfont_size=11)
+    fig_metricas.update_layout(
+        height=420,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        yaxis_title="Valor",
+        xaxis_title=""
+    )
+
+    st.plotly_chart(fig_metricas, use_container_width=True)
+
+st.divider()
+
+# ── Sección 5: Importancia de variables (Feature Importance) ─────────────────
+st.subheader("📌 Importancia de Variables — Random Forest Optimizado")
+st.markdown(
+    "Contribución relativa de cada variable predictora en el modelo Random Forest. "
+    "Un valor más alto indica mayor influencia en la predicción de PM2.5."
+)
+
+@st.cache_data
+def cargar_importancia():
+    return pd.read_csv("data/feature_importance_rf.csv", encoding="utf-8-sig")
+
+df_imp = cargar_importancia()
+
+# Etiquetas legibles para cada variable
+etiquetas = {
+    'pm25_lag1':              'PM2.5 hora anterior (lag 1)',
+    'pm25_lag2':              'PM2.5 hace 2 horas (lag 2)',
+    'pm25_lag3':              'PM2.5 hace 3 horas (lag 3)',
+    'pm25_lag6':              'PM2.5 hace 6 horas (lag 6)',
+    'pm25_lag24':             'PM2.5 hace 24 horas (lag 24)',
+    'hora':                   'Hora del día',
+    'mes':                    'Mes del año',
+    'temperature_2m':         'Temperatura (°C)',
+    'relative_humidity_2m':   'Humedad relativa (%)',
+    'wind_speed_10m':         'Velocidad del viento (km/h)',
+    'direct_radiation':       'Radiación solar directa (W/m²)',
+    'surface_pressure':       'Presión superficial (hPa)'
+}
+
+df_imp['variable_label'] = df_imp['variable'].map(etiquetas).fillna(df_imp['variable'])
+df_imp['porcentaje'] = (df_imp['importancia'] * 100).round(2)
+df_imp = df_imp.sort_values('importancia', ascending=True)
+
+col_i1, col_i2 = st.columns([2, 1])
+
+with col_i1:
+    fig_imp = go.Figure()
+
+    fig_imp.add_trace(go.Bar(
+        x=df_imp['importancia'],
+        y=df_imp['variable_label'],
+        orientation='h',
+        marker=dict(
+            color=df_imp['importancia'],
+            colorscale='Teal',
+            showscale=False
+        ),
+        text=df_imp['porcentaje'].apply(lambda x: f"{x:.2f}%"),
+        textposition='outside',
+        hovertemplate="<b>%{y}</b><br>Importancia: %{x:.4f}<extra></extra>"
+    ))
+
+    fig_imp.update_layout(
+        title="Importancia relativa de variables predictoras",
+        xaxis_title="Importancia relativa",
+        yaxis_title="",
+        height=480,
+        margin=dict(l=10, r=80, t=50, b=40),
+        xaxis=dict(range=[0, df_imp['importancia'].max() * 1.25])
+    )
+
+    st.plotly_chart(fig_imp, use_container_width=True)
+
+with col_i2:
+    st.markdown("**Tabla de importancia**")
+    st.dataframe(
+        df_imp[['variable_label', 'porcentaje']]
+        .sort_values('porcentaje', ascending=False)
+        .rename(columns={
+            'variable_label': 'Variable',
+            'porcentaje': 'Importancia (%)'
+        }),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            'Importancia (%)': st.column_config.NumberColumn(
+                'Importancia (%)', format="%.2f%%"
+            )
+        }
+    )
+
+    st.caption(
+        "pm25_lag1 concentra aproximadamente el 73% del poder predictivo, "
+        "confirmando la alta autocorrelación temporal del PM2.5 en Fontibón."
+    )
+
+st.divider()
+
+# ── Sección 6: PM2.5 Real vs. Predicho ──────────────────────────────────────
+st.subheader("📉 PM2.5 Real vs. Predicho — Conjunto de Prueba")
+st.markdown(
+    "Comparación hora a hora entre la concentración real de PM2.5 y las predicciones "
+    "del modelo Random Forest, XGBoost y el método NowCast durante el periodo de prueba."
+)
+
+@st.cache_data
+def cargar_resultados():
+    df = pd.read_csv("data/resultados_prediccion.csv",
+                     encoding="utf-8-sig",
+                     parse_dates=["fecha_hora"])
+    return df
+
+df_res = cargar_resultados()
+
+# ── Filtros ──────────────────────────────────────────────────────────────────
+col_r1, col_r2, col_r3 = st.columns(3)
+
+with col_r1:
+    anios_res = sorted(df_res["fecha_hora"].dt.year.unique())
+    anio_res = st.selectbox("Año ", anios_res, key="anio_res")
+
+with col_r2:
+    meses_res = sorted(df_res[df_res["fecha_hora"].dt.year == anio_res]["fecha_hora"].dt.month.unique())
+    mes_res = st.selectbox("Mes ", meses_res,
+                           format_func=lambda x: meses[x],
+                           key="mes_res")
+
+with col_r3:
+    modelos_sel = st.multiselect(
+        "Modelos a mostrar",
+        options=["Random Forest", "XGBoost", "NowCast"],
+        default=["Random Forest", "XGBoost", "NowCast"]
+    )
+
+# ── Filtrar datos ─────────────────────────────────────────────────────────────
+df_res_filtrado = df_res[
+    (df_res["fecha_hora"].dt.year == anio_res) &
+    (df_res["fecha_hora"].dt.month == mes_res)
+].copy()
+
+if df_res_filtrado.empty:
+    st.warning("No hay datos de predicción para el periodo seleccionado. "
+               "Recuerda que los resultados corresponden solo al conjunto de prueba (último 20% cronológico).")
+else:
+    # ── Gráfico serie temporal ────────────────────────────────────────────────
+    fig_pred = go.Figure()
+
+    fig_pred.add_trace(go.Scatter(
+        x=df_res_filtrado["fecha_hora"],
+        y=df_res_filtrado["pm25_real"],
+        name="PM2.5 Real",
+        line=dict(color="#2C3E50", width=2),
+        hovertemplate="<b>Real</b>: %{y:.2f} µg/m³<br>%{x}<extra></extra>"
+    ))
+
+    if "Random Forest" in modelos_sel:
+        fig_pred.add_trace(go.Scatter(
+            x=df_res_filtrado["fecha_hora"],
+            y=df_res_filtrado["pm25_predicho_rf"],
+            name="Random Forest",
+            line=dict(color="#1f77b4", width=1.5, dash="dot"),
+            hovertemplate="<b>RF</b>: %{y:.2f} µg/m³<br>%{x}<extra></extra>"
+        ))
+
+    if "XGBoost" in modelos_sel:
+        fig_pred.add_trace(go.Scatter(
+            x=df_res_filtrado["fecha_hora"],
+            y=df_res_filtrado["pm25_predicho_xgb"],
+            name="XGBoost",
+            line=dict(color="#2ca02c", width=1.5, dash="dash"),
+            hovertemplate="<b>XGBoost</b>: %{y:.2f} µg/m³<br>%{x}<extra></extra>"
+        ))
+
+    if "NowCast" in modelos_sel:
+        fig_pred.add_trace(go.Scatter(
+            x=df_res_filtrado["fecha_hora"],
+            y=df_res_filtrado["pm25_nowcast"],
+            name="NowCast",
+            line=dict(color="#ff7f0e", width=1.5, dash="longdash"),
+            hovertemplate="<b>NowCast</b>: %{y:.2f} µg/m³<br>%{x}<extra></extra>"
+        ))
+
+    fig_pred.add_hline(
+        y=37,
+        line_dash="dash",
+        line_color="red",
+        annotation_text="Límite Res. 2254/2017 (37 µg/m³)",
+        annotation_position="top left"
+    )
+
+    fig_pred.update_layout(
+        title=f"PM2.5 Real vs. Predicho — {meses[mes_res]} {anio_res}",
+        xaxis_title="Fecha y hora",
+        yaxis_title="Concentración PM2.5 (µg/m³)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="x unified",
+        height=460
+    )
+
+    st.plotly_chart(fig_pred, use_container_width=True)
+
+# ── Métricas del periodo seleccionado ────────────────────────────────────
+    st.markdown(f"**Métricas del periodo — {meses[mes_res]} {anio_res}**")
+    col_p1, col_p2, col_p3 = st.columns(3)
+
+    real = df_res_filtrado["pm25_real"].dropna()
+
+    for col_met, nombre, col_pred in zip(
+        [col_p1, col_p2, col_p3],
+        ["Random Forest", "XGBoost", "NowCast"],
+        ["pm25_predicho_rf", "pm25_predicho_xgb", "pm25_nowcast"]
+    ):
+        if nombre in modelos_sel:
+            pred = df_res_filtrado[col_pred].dropna()
+            idx  = real.index.intersection(pred.index)
+            if len(idx) > 0:
+                r = real[idx].values
+                p = pred[idx].values
+                rmse = np.sqrt(np.mean((r - p) ** 2))
+                ss_res = np.sum((r - p) ** 2)
+                ss_tot = np.sum((r - np.mean(r)) ** 2)
+                r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+                col_met.metric(
+                    label=nombre,
+                    value=f"RMSE: {rmse:.2f} µg/m³",
+                    delta=f"R²: {r2:.3f}",
+                    delta_color="off"
+                )
 
 st.divider()
