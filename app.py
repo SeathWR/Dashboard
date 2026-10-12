@@ -1,560 +1,253 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-import numpy as np
+import datetime
 
-
-# ── Configuración general ────────────────────────────────────────────────────
+# 1. Configuración Responsiva
 st.set_page_config(
-    page_title="PM2.5 Fontibón — Dashboard",
-    page_icon="🌫️",
-    layout="wide"
+    page_title="Aire Fontibón - PM2.5",
+    page_icon="🍃",
+    layout="wide", # Permite expansión en escritorio y apilamiento en móvil
+    initial_sidebar_state="collapsed"
 )
 
-# ── Carga de datos ───────────────────────────────────────────────────────────
-@st.cache_data
-def cargar_datos():
-    df = pd.read_csv("data/iboca_fontibon.csv", encoding="utf-8-sig", parse_dates=["fecha_hora"])
-    return df
-
-df = cargar_datos()
-
-# ── Cálculo del desfase ──────────────────────────────────────────────────────
-df["desfase_relativo"] = (df["pm25"] - df["NowCast"]).abs() / df["pm25"]
-df_desfasados = df[df["desfase_relativo"] > 0.10]
-
-total_registros     = len(df)
-total_desfasados    = len(df_desfasados)
-pct_desfasados      = total_desfasados / total_registros * 100
-media_desfase       = (df_desfasados["pm25"] - df_desfasados["NowCast"]).mean()
-desviacion_desfase  = (df_desfasados["pm25"] - df_desfasados["NowCast"]).std()
-
-# ── Encabezado ───────────────────────────────────────────────────────────────
-st.title("🌫️ Monitoreo PM2.5 — Localidad de Fontibón, Bogotá")
-st.markdown(
-    "Comparación entre el método **NowCast (IBOCA)** y modelos de Machine Learning "
-    "(**Random Forest / XGBoost**) | Periodo: Enero 2024 – Diciembre 2025"
-)
-st.divider()
-
-# ── Sección 1: Métricas del desfase ─────────────────────────────────────────
-st.subheader("📊 Desfase NowCast vs. Concentración Real de PM2.5")
-st.markdown(
-    "El siguiente análisis cuantifica la diferencia entre las estimaciones del método "
-    "NowCast y las mediciones reales registradas en la estación de Fontibón."
-)
-
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric(
-    label="Total de registros",
-    value=f"{total_registros:,}"
-)
-col2.metric(
-    label="Registros con desfase > 10%",
-    value=f"{total_desfasados:,}",
-    delta=f"{pct_desfasados:.1f}% del total",
-    delta_color="inverse"
-)
-col3.metric(
-    label="Diferencia promedio (desfasados)",
-    value=f"{media_desfase:.2f} µg/m³"
-)
-col4.metric(
-    label="Desviación estándar (desfasados)",
-    value=f"{desviacion_desfase:.2f} µg/m³"
-)
-
-st.divider()
-# ── Sección 2: Serie temporal PM2.5 real vs. NowCast ────────────────────────
-st.subheader("📈 Serie Temporal — PM2.5 Real vs. NowCast")
-st.markdown("Selecciona un rango de fechas para explorar el comportamiento hora a hora.")
-
-# Filtros
-col_f1, col_f2 = st.columns(2)
-
-with col_f1:
-    anios_disponibles = sorted(df["año"].unique())
-    anio_sel = st.selectbox("Año", anios_disponibles)
-
-with col_f2:
-    meses = {
-        1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
-        5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
-        9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+# 2. Inyección de CSS (Color de fuentes oscuro explícito para evitar fallos en Modo Oscuro)
+st.markdown("""
+<style>
+    .circle-container { display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 10px auto; }
+    .circle-badge { width: 220px; height: 220px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #FFFFFF; box-shadow: 0 8px 24px rgba(0,0,0,0.12); transition: transform 0.3s ease; }
+    .circle-badge:hover { transform: scale(1.02); }
+    .pm-val { font-size: 3.8rem; font-weight: 800; line-height: 1; }
+    .pm-unit { font-size: 1rem; font-weight: 400; margin-top: 5px; opacity: 0.9; }
+    .risk-card { border-radius: 12px; padding: 16px 20px; margin: 15px auto 25px auto; text-align: center; max-width: 600px; }
+    .metric-pill { background-color: #F8F9FA; border-radius: 10px; padding: 15px; text-align: center; border: 1px solid #E9ECEF; height: 100%; }
+    
+    @media (max-width: 768px) {
+        .pm-val { font-size: 3.2rem; }
+        .circle-badge { width: 190px; height: 190px; }
     }
-    meses_disponibles = sorted(df[df["año"] == anio_sel]["mes"].unique())
-    mes_sel = st.selectbox("Mes", meses_disponibles, format_func=lambda x: meses[x])
+</style>
+""", unsafe_allow_html=True)
 
-# Filtrar datos
-df_filtrado = df[(df["año"] == anio_sel) & (df["mes"] == mes_sel)].copy()
+# 3. Lógica Semiótica IBOCA
+def clasificar_iboca(pm25):
+    if pm25 <= 12.0: return "Bajo", "#2ECC71", "#E8F8F0", "Aire limpio. Condiciones óptimas para toda actividad."
+    elif pm25 <= 35.4: return "Moderado", "#F1C40F", "#FEF9E7", "Aceptable. Personas muy sensibles deben considerar pausas."
+    elif pm25 <= 55.4: return "Regular", "#E67E22", "#FBEEE6", "Alerta Fase 1: Grupos sensibles reduzcan esfuerzo al aire libre."
+    elif pm25 <= 151.2: return "Alto", "#E74C3C", "#FDEDEC", "Alerta Fase 2: Riesgo alto. Evite ejercicio en exteriores."
+    else: return "Peligroso", "#8E44AD", "#F4ECF7", "Emergencia ambiental: Permanezca en espacios cerrados."
 
-# Gráfico
-fig_serie = go.Figure()
-
-fig_serie.add_trace(go.Scatter(
-    x=df_filtrado["fecha_hora"],
-    y=df_filtrado["pm25"],
-    name="PM2.5 Real",
-    line=dict(color="#1f77b4", width=1.5),
-    hovertemplate="<b>Real</b>: %{y:.2f} µg/m³<br>%{x}<extra></extra>"
-))
-
-fig_serie.add_trace(go.Scatter(
-    x=df_filtrado["fecha_hora"],
-    y=df_filtrado["NowCast"],
-    name="NowCast",
-    line=dict(color="#ff7f0e", width=1.5, dash="dot"),
-    hovertemplate="<b>NowCast</b>: %{y:.2f} µg/m³<br>%{x}<extra></extra>"
-))
-
-# Línea de límite normativo (Resolución 2254 de 2017: 37 µg/m³ promedio 24h)
-fig_serie.add_hline(
-    y=37,
-    line_dash="dash",
-    line_color="red",
-    annotation_text="Límite Res. 2254/2017 (37 µg/m³)",
-    annotation_position="top left"
-)
-
-fig_serie.update_layout(
-    title=f"PM2.5 Real vs. NowCast — {meses[mes_sel]} {anio_sel}",
-    xaxis_title="Fecha y hora",
-    yaxis_title="Concentración PM2.5 (µg/m³)",
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    hovermode="x unified",
-    height=450
-)
-
-st.plotly_chart(fig_serie, use_container_width=True)
-
-# Estadísticas del mes seleccionado
-st.markdown(f"**Estadísticas del periodo seleccionado — {meses[mes_sel]} {anio_sel}**")
-col_e1, col_e2, col_e3, col_e4 = st.columns(4)
-col_e1.metric("PM2.5 real promedio", f"{df_filtrado['pm25'].mean():.2f} µg/m³")
-col_e2.metric("NowCast promedio", f"{df_filtrado['NowCast'].mean():.2f} µg/m³")
-col_e3.metric("PM2.5 real máximo", f"{df_filtrado['pm25'].max():.2f} µg/m³")
-col_e4.metric("Datos faltantes", f"{df_filtrado['pm25'].isna().sum()} horas")
-
-st.divider()
-# ── Sección 3: Análisis del desfase ─────────────────────────────────────────
-st.subheader("🔍 Análisis del Desfase — NowCast vs. PM2.5 Real")
-st.markdown(
-    "Distribución de la diferencia entre la concentración real medida y la estimación "
-    "generada por NowCast, hora a hora durante el periodo completo de estudio."
-)
-
-# Calcular diferencia
-df["diferencia"] = df["pm25"] - df["NowCast"]
-
-col_g1, col_g2 = st.columns(2)
-
-# ── Gráfico 1: Histograma de la diferencia ───────────────────────────────────
-with col_g1:
-    fig_hist = px.histogram(
-        df.dropna(subset=["diferencia"]),
-        x="diferencia",
-        nbins=80,
-        color_discrete_sequence=["#1f77b4"],
-        title="Distribución de la diferencia (Real − NowCast)",
-        labels={"diferencia": "Diferencia (µg/m³)", "count": "Frecuencia"}
-    )
-    fig_hist.add_vline(
-        x=0,
-        line_dash="dash",
-        line_color="red",
-        annotation_text="Sin desfase",
-        annotation_position="top right"
-    )
-    fig_hist.add_vline(
-        x=df["diferencia"].mean(),
-        line_dash="dot",
-        line_color="orange",
-        annotation_text=f"Media: {df['diferencia'].mean():.2f} µg/m³",
-        annotation_position="top left"
-    )
-    fig_hist.update_layout(height=400, yaxis_title="Frecuencia")
-    st.plotly_chart(fig_hist, use_container_width=True)
-
-# ── Gráfico 2: Desfase promedio por hora del día ─────────────────────────────
-with col_g2:
-    desfase_por_hora = (
-        df.dropna(subset=["diferencia"])
-        .groupby("hora")["diferencia"]
-        .agg(["mean", "std"])
-        .reset_index()
-        .rename(columns={"mean": "media", "std": "desviacion"})
-    )
-
-    fig_hora = go.Figure()
-
-    fig_hora.add_trace(go.Scatter(
-        x=desfase_por_hora["hora"],
-        y=desfase_por_hora["media"],
-        mode="lines+markers",
-        name="Diferencia promedio",
-        line=dict(color="#1f77b4", width=2),
-        hovertemplate="Hora %{x}:00 — Media: %{y:.2f} µg/m³<extra></extra>"
-    ))
-
-    fig_hora.add_trace(go.Scatter(
-        x=pd.concat([desfase_por_hora["hora"], desfase_por_hora["hora"][::-1]]),
-        y=pd.concat([
-            desfase_por_hora["media"] + desfase_por_hora["desviacion"],
-            (desfase_por_hora["media"] - desfase_por_hora["desviacion"])[::-1]
-        ]),
-        fill="toself",
-        fillcolor="rgba(31, 119, 180, 0.15)",
-        line=dict(color="rgba(255,255,255,0)"),
-        name="±1 Desviación estándar",
-        hoverinfo="skip"
-    ))
-
-    fig_hora.add_hline(
-        y=0,
-        line_dash="dash",
-        line_color="red",
-        annotation_text="Sin desfase"
-    )
-
-    fig_hora.update_layout(
-        title="Desfase promedio por hora del día",
-        xaxis_title="Hora del día",
-        yaxis_title="Diferencia promedio (µg/m³)",
-        xaxis=dict(tickmode="linear", tick0=0, dtick=2),
-        height=400,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02)
-    )
-    st.plotly_chart(fig_hora, use_container_width=True)
-
-# ── Tabla resumen del desfase ────────────────────────────────────────────────
-st.markdown("**Resumen estadístico del desfase por año**")
-resumen = (
-    df.dropna(subset=["diferencia"])
-    .groupby("año")["diferencia"]
-    .agg(
-        Registros="count",
-        Media="mean",
-        Desviacion_Std="std",
-        MAE=lambda x: x.abs().mean(),
-        Desfase_mayor_10pct=lambda x: (
-            (x.abs() / df.loc[x.index, "pm25"]) > 0.10
-        ).sum()
-    )
-    .reset_index()
-    .rename(columns={"año": "Año"})
-)
-resumen["% Desfase > 10%"] = (resumen["Desfase_mayor_10pct"] / resumen["Registros"] * 100).round(1)
-resumen["Media"] = resumen["Media"].round(2)
-resumen["Desviacion_Std"] = resumen["Desviacion_Std"].round(2)
-resumen["MAE"] = resumen["MAE"].round(2)
-
-st.dataframe(resumen, use_container_width=True, hide_index=True)
-
-st.divider()
-
-# ── Sección 4: Comparación de métricas de modelos ───────────────────────────
-st.subheader("🤖 Comparación de Modelos — Random Forest vs. XGBoost vs. NowCast")
-st.markdown(
-    "Métricas de desempeño calculadas sobre el periodo de estudio completo "
-    "(Enero 2024 – Diciembre 2025). "
-    "**Nota:** la comparación con NowCast es estructuralmente asimétrica — "
-    "NowCast utiliza lecturas de estación en tiempo real, mientras que los modelos "
-    "ML predicen sin acceso a ese dato inmediato."
-)
-
-# ── Datos de métricas ────────────────────────────────────────────────────────
-metricas = pd.DataFrame({
-    "Modelo": ["Random Forest Optimizado", "XGBoost", "NowCast IBOCA"],
-    "RMSE": [6.7050, 6.6824, 3.9885],
-    "MAE": [4.8114, 4.7461, 2.8479],
-    "R²": [0.5772, 0.5801, 0.8505]
-})
-
-colores_modelos = {
-    "Random Forest Optimizado": "#1f77b4",
-    "XGBoost": "#2ca02c",
-    "NowCast IBOCA": "#ff7f0e"
-}
-
-col_m1, col_m2 = st.columns([1, 2])
-
-# ── Tabla de métricas ────────────────────────────────────────────────────────
-with col_m1:
-    st.markdown("**Tabla resumen**")
-
-    # Agregar columna de color como emoji para identificar cada modelo
-    metricas_display = metricas.copy()
-    metricas_display.insert(0, "Color", ["🔵", "🟢", "🟠"])
-
-    st.dataframe(
-        metricas_display,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Color": st.column_config.TextColumn("", width="small"),
-            "Modelo": st.column_config.TextColumn("Modelo"),
-            "RMSE": st.column_config.NumberColumn("RMSE", format="%.4f"),
-            "MAE": st.column_config.NumberColumn("MAE", format="%.4f"),
-            "R²": st.column_config.NumberColumn("R²", format="%.4f")
-        }
-    )
-
-    st.caption(
-        "RMSE y MAE en µg/m³ — valores más bajos indican mejor desempeño. "
-        "R² más cercano a 1 indica mejor ajuste."
-    )
-
-# ── Gráfico de barras agrupadas ──────────────────────────────────────────────
-with col_m2:
-    metricas_melted = metricas.melt(
-        id_vars="Modelo",
-        value_vars=["RMSE", "MAE", "R²"],
-        var_name="Métrica",
-        value_name="Valor"
-    )
-
-    fig_metricas = px.bar(
-        metricas_melted,
-        x="Métrica",
-        y="Valor",
-        color="Modelo",
-        barmode="group",
-        color_discrete_map=colores_modelos,
-        title="Comparación visual de métricas por modelo",
-        text_auto=".4f"
-    )
-
-    fig_metricas.update_traces(textposition="outside", textfont_size=11)
-    fig_metricas.update_layout(
-        height=420,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        yaxis_title="Valor",
-        xaxis_title=""
-    )
-
-    st.plotly_chart(fig_metricas, use_container_width=True)
-
-st.divider()
-
-# ── Sección 5: Importancia de variables (Feature Importance) ─────────────────
-st.subheader("📌 Importancia de Variables — Random Forest Optimizado")
-st.markdown(
-    "Contribución relativa de cada variable predictora en el modelo Random Forest. "
-    "Un valor más alto indica mayor influencia en la predicción de PM2.5."
-)
-
+# 4. Extracción de Datos (ETL)
 @st.cache_data
-def cargar_importancia():
-    return pd.read_csv("data/feature_importance_rf.csv", encoding="utf-8-sig")
+def load_data():
+    pred_df = pd.read_csv("data/resultados_prediccion.csv")
+    meteo_df = pd.read_csv("data/data_openmeteo.csv")
+    metricas_df = pd.read_csv("data/metricas_modelos.csv")
+    feat_imp_df = pd.read_csv("data/feature_importance_rf.csv")
+    
+    pred_df['fecha_hora'] = pd.to_datetime(pred_df['fecha_hora'])
+    meteo_df['fecha_hora'] = pd.to_datetime(meteo_df['fecha_hora'])
+    
+    pred_df = pred_df.sort_values('fecha_hora')
+    meteo_df = meteo_df.sort_values('fecha_hora')
+    
+    return pred_df, meteo_df, metricas_df, feat_imp_df
 
-df_imp = cargar_importancia()
+pred_df, meteo_df, metricas_df, feat_imp_df = load_data()
 
-# Etiquetas legibles para cada variable
-etiquetas = {
-    'pm25_lag1':              'PM2.5 hora anterior (lag 1)',
-    'pm25_lag2':              'PM2.5 hace 2 horas (lag 2)',
-    'pm25_lag3':              'PM2.5 hace 3 horas (lag 3)',
-    'pm25_lag6':              'PM2.5 hace 6 horas (lag 6)',
-    'pm25_lag24':             'PM2.5 hace 24 horas (lag 24)',
-    'hora':                   'Hora del día',
-    'mes':                    'Mes del año',
-    'temperature_2m':         'Temperatura (°C)',
-    'relative_humidity_2m':   'Humedad relativa (%)',
-    'wind_speed_10m':         'Velocidad del viento (km/h)',
-    'direct_radiation':       'Radiación solar directa (W/m²)',
-    'surface_pressure':       'Presión superficial (hPa)'
-}
+min_date = pred_df['fecha_hora'].min().date()
+max_date = pred_df['fecha_hora'].max().date()
+default_start = max_date - datetime.timedelta(days=3)
 
-df_imp['variable_label'] = df_imp['variable'].map(etiquetas).fillna(df_imp['variable'])
-df_imp['porcentaje'] = (df_imp['importancia'] * 100).round(2)
-df_imp = df_imp.sort_values('importancia', ascending=True)
+# 5. GESTIÓN DEL ESTADO (Para el Reset y Filtros)
+if 'fechas' not in st.session_state:
+    st.session_state.fechas = (default_start, max_date)
+if 'horas' not in st.session_state:
+    st.session_state.horas = (0, 23)
+if 'mostrar_actual' not in st.session_state:
+    st.session_state.mostrar_actual = True
 
-col_i1, col_i2 = st.columns([2, 1])
+# Callbacks para actualizar el estado
+def reset_actual():
+    st.session_state.mostrar_actual = True
+    st.session_state.fechas = (default_start, max_date)
+    st.session_state.horas = (0, 23)
 
-with col_i1:
-    fig_imp = go.Figure()
+def on_filter_change():
+    st.session_state.mostrar_actual = False
 
-    fig_imp.add_trace(go.Bar(
-        x=df_imp['importancia'],
-        y=df_imp['variable_label'],
-        orientation='h',
-        marker=dict(
-            color=df_imp['importancia'],
-            colorscale='Teal',
-            showscale=False
-        ),
-        text=df_imp['porcentaje'].apply(lambda x: f"{x:.2f}%"),
-        textposition='outside',
-        hovertemplate="<b>%{y}</b><br>Importancia: %{x:.4f}<extra></extra>"
-    ))
 
-    fig_imp.update_layout(
-        title="Importancia relativa de variables predictoras",
-        xaxis_title="Importancia relativa",
-        yaxis_title="",
-        height=480,
-        margin=dict(l=10, r=80, t=50, b=40),
-        xaxis=dict(range=[0, df_imp['importancia'].max() * 1.25])
+# ----------------- CABECERA Y FILTROS -----------------
+st.markdown("<h3 style='text-align: center; margin-bottom: 0px;'>Fontibón | Calidad del Aire</h3>", unsafe_allow_html=True)
+st.write("---")
+
+col_date, col_time, col_reset = st.columns([2, 2, 1])
+
+with col_date:
+    rango_fechas = st.date_input(
+        "📅 Rango de Fechas:",
+        value=st.session_state.fechas,
+        min_value=min_date,
+        max_value=max_date,
+        key="fechas",
+        on_change=on_filter_change
     )
 
-    st.plotly_chart(fig_imp, use_container_width=True)
-
-with col_i2:
-    st.markdown("**Tabla de importancia**")
-    st.dataframe(
-        df_imp[['variable_label', 'porcentaje']]
-        .sort_values('porcentaje', ascending=False)
-        .rename(columns={
-            'variable_label': 'Variable',
-            'porcentaje': 'Importancia (%)'
-        }),
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            'Importancia (%)': st.column_config.NumberColumn(
-                'Importancia (%)', format="%.2f%%"
-            )
-        }
+with col_time:
+    rango_horas = st.slider(
+        "⏱️ Franja Horaria:",
+        min_value=0, max_value=23,
+        value=st.session_state.horas,
+        format="%02d:00",
+        key="horas",
+        on_change=on_filter_change
     )
 
-    st.caption(
-        "pm25_lag1 concentra aproximadamente el 73% del poder predictivo, "
-        "confirmando la alta autocorrelación temporal del PM2.5 en Fontibón."
-    )
+with col_reset:
+    st.write("") # Espaciador para alinear el botón verticalmente
+    st.write("") 
+    st.button("🔄 Ver Actual", on_click=reset_actual, use_container_width=True, help="Borrar filtros y ver el estado más reciente")
 
-st.divider()
 
-# ── Sección 6: PM2.5 Real vs. Predicho ──────────────────────────────────────
-st.subheader("📉 PM2.5 Real vs. Predicho — Conjunto de Prueba")
-st.markdown(
-    "Comparación hora a hora entre la concentración real de PM2.5 y las predicciones "
-    "del modelo Random Forest, XGBoost y el método NowCast durante el periodo de prueba."
-)
-
-@st.cache_data
-def cargar_resultados():
-    df = pd.read_csv("data/resultados_prediccion.csv",
-                     encoding="utf-8-sig",
-                     parse_dates=["fecha_hora"])
-    return df
-
-df_res = cargar_resultados()
-
-# ── Filtros ──────────────────────────────────────────────────────────────────
-col_r1, col_r2, col_r3 = st.columns(3)
-
-with col_r1:
-    anios_res = sorted(df_res["fecha_hora"].dt.year.unique())
-    anio_res = st.selectbox("Año ", anios_res, key="anio_res")
-
-with col_r2:
-    meses_res = sorted(df_res[df_res["fecha_hora"].dt.year == anio_res]["fecha_hora"].dt.month.unique())
-    mes_res = st.selectbox("Mes ", meses_res,
-                           format_func=lambda x: meses[x],
-                           key="mes_res")
-
-with col_r3:
-    modelos_sel = st.multiselect(
-        "Modelos a mostrar",
-        options=["Random Forest", "XGBoost", "NowCast"],
-        default=["Random Forest", "XGBoost", "NowCast"]
-    )
-
-# ── Filtrar datos ─────────────────────────────────────────────────────────────
-df_res_filtrado = df_res[
-    (df_res["fecha_hora"].dt.year == anio_res) &
-    (df_res["fecha_hora"].dt.month == mes_res)
-].copy()
-
-if df_res_filtrado.empty:
-    st.warning("No hay datos de predicción para el periodo seleccionado. "
-               "Recuerda que los resultados corresponden solo al conjunto de prueba (último 20% cronológico).")
+# ----------------- LÓGICA DE SINCRONIZACIÓN DE DATOS -----------------
+if st.session_state.mostrar_actual:
+    # MODO 1: Sin filtros (Reset activo) -> Muestra el último dato exacto
+    df_plot = pred_df.tail(24).copy() # Gráfico de las últimas 24h
+    
+    pm_mostrar = round(pred_df.iloc[-1]['pm25_real'], 1)
+    viento_mostrar = round(meteo_df.iloc[-1]['wind_speed_10m'], 1)
+    humedad_mostrar = round(meteo_df.iloc[-1]['relative_humidity_2m'], 1)
+    temp_mostrar = round(meteo_df.iloc[-1]['temperature_2m'], 1)
+    
+    subtitulo = f"Estación Tráfico Carrera 104 • Actualizado: {pred_df.iloc[-1]['fecha_hora'].strftime('%Y-%m-%d %H:00')}"
+    
 else:
-    # ── Gráfico serie temporal ────────────────────────────────────────────────
-    fig_pred = go.Figure()
+    # MODO 2: Filtros aplicados -> Muestra los PROMEDIOS del rango seleccionado
+    if len(rango_fechas) == 2:
+        f_ini, f_fin = rango_fechas
+        h_ini, h_fin = rango_horas
+        
+        # Filtrar Predicciones
+        mask_fecha = (pred_df['fecha_hora'].dt.date >= f_ini) & (pred_df['fecha_hora'].dt.date <= f_fin)
+        mask_hora = (pred_df['fecha_hora'].dt.hour >= h_ini) & (pred_df['fecha_hora'].dt.hour <= h_fin)
+        df_plot = pred_df.loc[mask_fecha & mask_hora].copy()
+        
+        # Filtrar Meteorología
+        mask_meteo_f = (meteo_df['fecha_hora'].dt.date >= f_ini) & (meteo_df['fecha_hora'].dt.date <= f_fin)
+        mask_meteo_h = (meteo_df['fecha_hora'].dt.hour >= h_ini) & (meteo_df['fecha_hora'].dt.hour <= h_fin)
+        meteo_plot = meteo_df.loc[mask_meteo_f & mask_meteo_h].copy()
+        
+        if not df_plot.empty:
+            pm_mostrar = round(df_plot['pm25_real'].mean(), 1)
+            viento_mostrar = round(meteo_plot['wind_speed_10m'].mean(), 1)
+            humedad_mostrar = round(meteo_plot['relative_humidity_2m'].mean(), 1)
+            temp_mostrar = round(meteo_plot['temperature_2m'].mean(), 1)
+            subtitulo = f"Promedio del periodo: {f_ini} al {f_fin} (Franja: {h_ini:02d}:00 - {h_fin:02d}:00)"
+        else:
+            pm_mostrar, viento_mostrar, humedad_mostrar, temp_mostrar = 0, 0, 0, 0
+            subtitulo = "Sin datos en el rango seleccionado"
+    else:
+        df_plot = pd.DataFrame()
+        pm_mostrar, viento_mostrar, humedad_mostrar, temp_mostrar = 0, 0, 0, 0
+        subtitulo = "Seleccione un rango de fechas válido"
 
-    fig_pred.add_trace(go.Scatter(
-        x=df_res_filtrado["fecha_hora"],
-        y=df_res_filtrado["pm25_real"],
-        name="PM2.5 Real",
-        line=dict(color="#2C3E50", width=2),
-        hovertemplate="<b>Real</b>: %{y:.2f} µg/m³<br>%{x}<extra></extra>"
+estado, color_hex, fondo_hex, recomendacion = clasificar_iboca(pm_mostrar)
+
+# ----------------- BLOQUE 1: DIAGNÓSTICO (CÍRCULO MUNARI) -----------------
+st.markdown(f"<p style='text-align: center; color: gray;'>{subtitulo}</p>", unsafe_allow_html=True)
+
+if pm_mostrar > 0:
+    st.markdown(f"""
+    <div class="circle-container">
+        <div class="circle-badge" style="background-color: {color_hex};">
+            <span class="pm-val">{pm_mostrar}</span>
+            <span class="pm-unit">µg/m³ PM₂.₅</span>
+        </div>
+    </div>
+    <div class="risk-card" style="background-color: {fondo_hex}; color: {color_hex}; border: 1px solid {color_hex};">
+        <span style="font-size: 1.2rem; font-weight: 700;">Nivel {estado.upper()}</span><br>
+        <span style="font-size: 1rem; color: #333333;">{recomendacion}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ----------------- BLOQUE 2: DISPERSIÓN ATMOSFÉRICA SINCRONIZADA -----------------
+    # Se añade etiqueta "(Promedio)" si hay filtros aplicados, para no confundir al usuario
+    label_suffix = "" if st.session_state.mostrar_actual else " (Promedio)"
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(f"""
+        <div class="metric-pill">
+            <span style="font-size:0.9rem; color:gray;">Viento{label_suffix}</span><br>
+            <span style="font-size:1.4rem; font-weight:bold; color:#2C3E50;">{viento_mostrar}</span> 
+            <span style="font-size:0.8rem; color:#2C3E50;">km/h</span>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"""
+        <div class="metric-pill">
+            <span style="font-size:0.9rem; color:gray;">Humedad{label_suffix}</span><br>
+            <span style="font-size:1.4rem; font-weight:bold; color:#2C3E50;">{humedad_mostrar}</span> 
+            <span style="font-size:0.8rem; color:#2C3E50;">%</span>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        st.markdown(f"""
+        <div class="metric-pill">
+            <span style="font-size:0.9rem; color:gray;">Temp.{label_suffix}</span><br>
+            <span style="font-size:1.4rem; font-weight:bold; color:#2C3E50;">{temp_mostrar}</span> 
+            <span style="font-size:0.8rem; color:#2C3E50;">°C</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ----------------- BLOQUE 3: GRÁFICO PLOTLY -----------------
+    st.subheader("Comportamiento y Predicción")
+    fig = go.Figure()
+    
+    # 1. Línea Real (Gris oscuro/Azul marino)
+    fig.add_trace(go.Scatter(
+        x=df_plot['fecha_hora'], y=df_plot['pm25_real'], 
+        mode='lines+markers', name='Concentración Real', 
+        line=dict(color='#2C3E50', width=2), marker=dict(size=4)
+    ))
+    
+    # 2. Línea NowCast IBOCA (Roja punteada)
+    fig.add_trace(go.Scatter(
+        x=df_plot['fecha_hora'], y=df_plot['pm25_nowcast'], 
+        mode='lines', name='NowCast (IBOCA)', 
+        line=dict(color='#E74C3C', width=2, dash='dash')
+    ))
+    
+    # 3. Línea Random Forest (Verde)
+    fig.add_trace(go.Scatter(
+        x=df_plot['fecha_hora'], y=df_plot['pm25_predicho_rf'], 
+        mode='lines', name='Random Forest', 
+        line=dict(color='#27AE60', width=2.5)
     ))
 
-    if "Random Forest" in modelos_sel:
-        fig_pred.add_trace(go.Scatter(
-            x=df_res_filtrado["fecha_hora"],
-            y=df_res_filtrado["pm25_predicho_rf"],
-            name="Random Forest",
-            line=dict(color="#1f77b4", width=1.5, dash="dot"),
-            hovertemplate="<b>RF</b>: %{y:.2f} µg/m³<br>%{x}<extra></extra>"
-        ))
+    # 4. Línea XGBoost (Azul) - ¡NUEVA!
+    fig.add_trace(go.Scatter(
+        x=df_plot['fecha_hora'], y=df_plot['pm25_predicho_xgb'], 
+        mode='lines', name='XGBoost', 
+        line=dict(color='#2980B9', width=2.5)
+    ))
 
-    if "XGBoost" in modelos_sel:
-        fig_pred.add_trace(go.Scatter(
-            x=df_res_filtrado["fecha_hora"],
-            y=df_res_filtrado["pm25_predicho_xgb"],
-            name="XGBoost",
-            line=dict(color="#2ca02c", width=1.5, dash="dash"),
-            hovertemplate="<b>XGBoost</b>: %{y:.2f} µg/m³<br>%{x}<extra></extra>"
-        ))
-
-    if "NowCast" in modelos_sel:
-        fig_pred.add_trace(go.Scatter(
-            x=df_res_filtrado["fecha_hora"],
-            y=df_res_filtrado["pm25_nowcast"],
-            name="NowCast",
-            line=dict(color="#ff7f0e", width=1.5, dash="longdash"),
-            hovertemplate="<b>NowCast</b>: %{y:.2f} µg/m³<br>%{x}<extra></extra>"
-        ))
-
-    fig_pred.add_hline(
-        y=37,
-        line_dash="dash",
-        line_color="red",
-        annotation_text="Límite Res. 2254/2017 (37 µg/m³)",
-        annotation_position="top left"
+    fig.update_layout(
+        height=350,
+        margin=dict(l=10, r=10, t=10, b=10),
+        # Se ajusta la leyenda para que se adapte si hay muchos elementos
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+        xaxis=dict(showgrid=False, title="Fecha y Hora"),
+        yaxis=dict(showgrid=True, title="µg/m³"),
+        hovermode="x unified"
     )
+    st.plotly_chart(fig, use_container_width=True)
 
-    fig_pred.update_layout(
-        title=f"PM2.5 Real vs. Predicho — {meses[mes_res]} {anio_res}",
-        xaxis_title="Fecha y hora",
-        yaxis_title="Concentración PM2.5 (µg/m³)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hovermode="x unified",
-        height=460
-    )
-
-    st.plotly_chart(fig_pred, use_container_width=True)
-
-# ── Métricas del periodo seleccionado ────────────────────────────────────
-    st.markdown(f"**Métricas del periodo — {meses[mes_res]} {anio_res}**")
-    col_p1, col_p2, col_p3 = st.columns(3)
-
-    real = df_res_filtrado["pm25_real"].dropna()
-
-    for col_met, nombre, col_pred in zip(
-        [col_p1, col_p2, col_p3],
-        ["Random Forest", "XGBoost", "NowCast"],
-        ["pm25_predicho_rf", "pm25_predicho_xgb", "pm25_nowcast"]
-    ):
-        if nombre in modelos_sel:
-            pred = df_res_filtrado[col_pred].dropna()
-            idx  = real.index.intersection(pred.index)
-            if len(idx) > 0:
-                r = real[idx].values
-                p = pred[idx].values
-                rmse = np.sqrt(np.mean((r - p) ** 2))
-                ss_res = np.sum((r - p) ** 2)
-                ss_tot = np.sum((r - np.mean(r)) ** 2)
-                r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-                col_met.metric(
-                    label=nombre,
-                    value=f"RMSE: {rmse:.2f} µg/m³",
-                    delta=f"R²: {r2:.3f}",
-                    delta_color="off"
-                )
-
-st.divider()
+# ----------------- BLOQUE 4: MÓDULO DIDÁCTICO -----------------
+with st.expander("📊 Profundización Técnica: Rendimiento del Modelo"):
+    st.write("### Desempeño Estadístico (Métricas)")
+    st.dataframe(metricas_df, use_container_width=True, hide_index=True)
+    st.write("### Variables Clave de Predicción (Feature Importance)")
+    st.bar_chart(feat_imp_df.set_index("variable")["importancia"], horizontal=True)
